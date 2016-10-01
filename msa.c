@@ -48,6 +48,8 @@ enum msa_conn_open_reason {
   MSA_OCONN_BALANCE_POLICY,
 };
 
+#define __msa_conn_is_active(conn) (conn->is_active)
+
 
 static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, int status, int event);
 static inline int add_event(int status, msa_connection_t *conn);
@@ -180,6 +182,13 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         }
         conn->pool->nr_successive_connection_fails = 0;
         conn->current_state = QUERY_START; 
+        if (!__msa_conn_is_active(conn)) {
+          msa_list_del(&conn->conns_list);
+          conn->pool->nr_nonactive_conns--;
+          msa_list_add_tail(&conn->conns_list, &conn->pool->active_conns_list_head);
+          conn->pool->nr_active_conns++;
+          conn->is_active = 1;
+        }
         break;
 
       case QUERY_START: 
@@ -228,8 +237,18 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
           gettimeofday(&t2,NULL);  // finish time
         */
 
+        // TODO: can we assume mysql_errno(&conn->mysql) == 0 ? (because conn->err is zero).
+
         conn->result = mysql_use_result(&conn->mysql);
-        conn->current_state = (conn->result)? FETCH_ROW_START : QUERY_START;
+        if (conn->result) {
+          conn->current_state = FETCH_ROW_START;
+        } else {
+          // end of query (no results)
+          conn->current_state = QUERY_START;
+          __msa_connection_del_current_query(conn);
+          conn->current_query_entry->after_query_cb(conn->current_query_entry, 0, mysql_errno(&conn->mysql)); // TODO: should pass somehow that there are no results?
+          // TODO: should i do here something else?
+        }
         break;
 
       case FETCH_ROW_START:
@@ -272,6 +291,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         conn->current_state = FETCH_ROW_START;
         break;
 
+// TODO: make not active here:
       case CLOSE_START:
         status= mysql_close_start(&conn->mysql);
         state_machine_continue = decide_next_state(status, conn, CLOSE_WAITING, CLOSE_DONE);   
@@ -328,8 +348,10 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   MSA_INIT_LIST_HEAD(&pool->active_queries_list_head);   // already assigned to a conn & being processed.
   pool->nr_active_queries = 0;
 
+  MSA_INIT_LIST_HEAD(&pool->nonactive_conns_list_head);
   MSA_INIT_LIST_HEAD(&pool->active_conns_list_head);
   MSA_INIT_LIST_HEAD(&pool->free_conns_list_head);
+  pool->nr_nonactive_conns = 0;
   pool->nr_active_conns = 0;
   pool->nr_free_conns = 0;
 
@@ -487,13 +509,13 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
   conn->result = NULL;
   // TODO: reset conn->row
   conn->err = 0;
+  conn->is_active = 0;
   
-  // TODO: add to active conns only after the connection is really active, add a new list in pool for 'nonactive' conns.
-  msa_list_add_tail(&conn->active_conns_list, &pool->active_conns_list_head);
-  pool->nr_active_conns++;
+  msa_list_add_tail(&conn->conns_list, &pool->nonactive_conns_list_head);
+  pool->nr_nonactive_conns++;
 
   MSA_INIT_LIST_HEAD(&conn->free_conns_list);
-  MSA_INIT_LIST_HEAD(&conn->active_conns_list);
+  MSA_INIT_LIST_HEAD(&conn->conns_list);
   conn->current_query_entry = NULL;
 
   __msa_connection_state_machine_handler(&conn->timeout_poll_handle, -1, -1);
@@ -530,9 +552,11 @@ static int __msa_pool_try_wake_free_conn(msa_pool_t *pool) {
     conn = msa_list_entry(free_conn_node, msa_connection_t, free_conns_list);
     assert(conn->current_query_entry == NULL);
     assert(conn->current_state == QUERY_START);
+    assert(__msa_conn_is_active(conn));
 
     msa_list_del(free_conn_node);
     pool->nr_free_conns--;
+    MSA_INIT_LIST_HEAD(free_conn_node);
 
     // start the state machine handle of the conn.
     __msa_connection_state_machine_handler(&conn->timeout_poll_handle, 0, 0);
@@ -551,8 +575,12 @@ static int __msa_connection_close(msa_connection_t *conn) {
     }
 
     // remove from pool
-    msa_list_del(&conn->active_conns_list);
-    conn->pool->nr_active_conns--;
+    msa_list_del(&conn->conns_list);
+    if (__msa_conn_is_active(conn)) {
+      conn->pool->nr_active_conns--;
+    } else {
+      conn->pool->nr_nonactive_conns--;
+    }
     if (conn->free_conns_list.prev != &conn->free_conns_list) {
         msa_list_del(&conn->free_conns_list);
         conn->pool->nr_free_conns--;

@@ -29,10 +29,12 @@ struct msa_connection_s {
 	int err;
 	//int index;  // TODO: do we need this?
 
-	list_t active_conns_list;
+	list_t conns_list; 	// member of active_conn_list or nonactive_conn_list
 	list_t free_conns_list;
 
-  int openning_reason; // should be used for handling failures.
+	int is_active;
+
+  	int openning_reason; // should be used for handling failures.
 
 #ifdef MSA_USE_STATISTICS
 	// todo: use right time type
@@ -49,8 +51,11 @@ struct msa_pool_s {
 	list_t active_queries_list_head;   // already assigned to a conn & being processed.
 	size_t nr_active_queries;
 
-	list_t active_conns_list_head;
-	list_t free_conns_list_head;
+	/* connections. each element in the list is a `msa_connection_t` */
+	list_t nonactive_conns_list_head;	// during initializing, have not been connected yet.
+	list_t active_conns_list_head;		// connected, ready to process query or already processing a query.
+	list_t free_conns_list_head;		// connected, and available to process a query (currently not processing)
+	size_t nr_nonactive_conns;
 	size_t nr_active_conns;
 	size_t nr_free_conns;
 
