@@ -11,16 +11,21 @@
 #include "msa.h"
 #include <uv.h>
 
+int nr_after_query_cb_calls = 0;
+
 static void res_ready_cb(msa_query_t *query, MYSQL_RES *result, MYSQL_ROW row) {
 	printf("res_ready_cb, query: %p\n", query);
 }
 static void after_query_cb(msa_query_t *query, int status, int mysql_status) {
 	printf("after_query_cb,  query: %p\n", query);
 	free((void*)query->query);
+	++nr_after_query_cb_calls;
+	assert(status == 0);
+	assert(status == mysql_status);
 }
 
 static void pool_error_cb(msa_pool_t *pool, int status, int mysql_status) {
-	printf("pool_error_cb,  status: %d   mysql_status: %d\n", status, mysql_status);
+	fprintf(stderr, "pool_error_cb,  status: %d   mysql_status: %d\n", status, mysql_status);
 }
 
 int main(int argc, char *argv[]) {
@@ -98,6 +103,8 @@ int main(int argc, char *argv[]) {
 
 	res = msa_pool_close(&pool);
 	assert(res == 0);
+
+	assert(nr_after_query_cb_calls == opt_query_num);
 
 	free(queries);
 	mysql_library_end();
