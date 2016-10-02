@@ -19,6 +19,7 @@ struct uv_timeout_poll_s {
 	int init_flags;
 	uv_timeout_poll_cb cb;
 	void* data;
+	uv_close_cb close_cb;
 };
 
 
@@ -28,6 +29,6 @@ int uv_timeout_poll_start(uv_timeout_poll_t* handle, int events, uv_timeout_poll
 
 int uv_timeout_poll_stop(uv_timeout_poll_t* handle);
 
-void uv_timeout_poll_close(uv_timeout_poll_t* handle);
+int uv_timeout_poll_close(uv_timeout_poll_t* handle, uv_close_cb close_cb);
 
 #endif // UV_TIMEOUT_POLL_H
