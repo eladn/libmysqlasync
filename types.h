@@ -36,6 +36,8 @@ struct msa_connection_s {
 
   	int openning_reason; // should be used for handling failures.
 
+  	int closing;  // 0 - no closing; non-zero - the closing reason. it will be closed after the current query serving is done.
+
 #ifdef MSA_USE_STATISTICS
 	// todo: use right time type
 	unsigned long current_query_start_time;
@@ -52,11 +54,14 @@ struct msa_pool_s {
 	size_t nr_active_queries;
 
 	/* connections. each element in the list is a `msa_connection_t` */
+	/* the following 2 lists are mutual exclusive */
 	list_t nonactive_conns_list_head;	// during initializing, have not been connected yet.
 	list_t active_conns_list_head;		// connected, ready to process query or already processing a query.
-	list_t free_conns_list_head;		// connected, and available to process a query (currently not processing)
 	size_t nr_nonactive_conns;
 	size_t nr_active_conns;
+
+	/* a free conn is also active */
+	list_t free_conns_list_head;		// connected, and available to process a query (currently not processing)
 	size_t nr_free_conns;
 
 	unsigned long last_freed_conn_time; // todo: use right time type
