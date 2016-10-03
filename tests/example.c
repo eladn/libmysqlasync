@@ -46,10 +46,10 @@ int main(int argc, char *argv[]) {
 	char *strQuery;
 
 	memset(&opts, 0, sizeof(opts));
-	opts.db = (argc > 3)? argv[3] : "telem";
-	opts.user = (argc > 4)? argv[4] : "telem";
-	opts.password = (argc > 5)? argv[5] : "A9JKdvdYQMdFg3pVFd9u";
-	opts.host = (argc > 6)? argv[6] : "telem.czxotmctpc9j.us-west-2.rds.amazonaws.com";
+	opts.db = (argc > 3)? argv[3] : "";
+	opts.user = (argc > 4)? argv[4] : "";
+	opts.password = (argc > 5)? argv[5] : "";
+	opts.host = (argc > 6)? argv[6] : "";
 	opts.initial_nr_conns = 32;
 	opts.min_nr_conns = 32;
 	opts.max_nr_conns = 32;
