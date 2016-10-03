@@ -1,10 +1,11 @@
 #ifndef MSA_H_
 #define MSA_H_
 
+#include <stdlib.h>
 #include <string.h>
 #include <mysql.h>
-#include <my_global.h>
-#include <my_sys.h>
+//#include <my_global.h>
+//#include <my_sys.h>
 #include <uv.h>
 
 #include "list.h"

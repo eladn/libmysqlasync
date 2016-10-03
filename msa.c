@@ -13,6 +13,7 @@
 	Does the mysql fd stays the same?
 **/
 
+#include <assert.h>
 #include <string.h>
 #include "msa.h"
 #include "list.h"
@@ -67,6 +68,7 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
 static int __msa_connection_del_current_query(msa_connection_t *conn);
 static int __msa_pool_try_wake_free_conn(msa_pool_t *pool);
 static int __msa_pool_del_closed_connection(msa_connection_t *conn);
+static inline int __msa_pool_del_closed_connection_wo_poll_handle(msa_connection_t *conn);
 static int __msa_conn_close(msa_connection_t* conn);
 static inline int __msa_pending_query_close(msa_query_t *query);
 static inline int __msa_conn_wake_up(msa_connection_t *conn);
@@ -180,6 +182,13 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
       case CONNECT_START:   
         status = mysql_real_connect_start(&conn->ret, &conn->mysql, conn->pool->opts->host, 
         	conn->pool->opts->user, conn->pool->opts->password, conn->pool->opts->db, 0, NULL, 0);
+        if (status == 0 && !conn->ret) {
+          conn->pool->nr_successive_connection_fails++;
+          if (conn->pool->opts->error_cb != NULL)
+            conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_ECONNFAIL, mysql_errno(&conn->mysql));
+          __msa_pool_del_closed_connection_wo_poll_handle(conn); /* poll handle is not initialized here yet */
+          return;
+        }
         init_poll_handle(conn);  // TODO: handle return errors
         state_machine_continue = decide_next_state(status, conn, CONNECT_WAITING, CONNECT_DONE);   
         break;
@@ -196,7 +205,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
 
           //fatal(conn, "Failed to mysql_real_connect()");
           if (conn->pool->opts->error_cb != NULL)
-            conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR & MSA_ECONNFAIL, mysql_errno(&conn->mysql));
+            conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_ECONNFAIL, mysql_errno(&conn->mysql));
 
           // remove this conn from pool
           __msa_pool_del_closed_connection(conn);
@@ -265,9 +274,9 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         if (conn->err) {
           prev_query = conn->current_query_entry;
           __msa_connection_del_current_query(conn);
-          prev_query->after_query_cb(prev_query, MSA_EMYSQLERR & MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
+          prev_query->after_query_cb(prev_query, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
           if (conn->pool->opts->error_cb != NULL)
-            conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR & MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
+            conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
           conn->current_state = QUERY_START;  // Notice: originally was CONNECT_DONE (don't know why)
                                               // now each conn can arrive CONNECT_DONE only one time during first initialization.
           break;
@@ -309,7 +318,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
           __msa_connection_del_current_query(conn);
           if (mysql_errno(&conn->mysql)) {
             //printf("%d | Error: %s\n", conn->index, mysql_error(&conn->mysql));
-            prev_query->after_query_cb(prev_query, MSA_EMYSQLERR & MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
+            prev_query->after_query_cb(prev_query, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
           } else {
             /* EOF - no more rows */
             prev_query->after_query_cb(prev_query, /*TODO: use right status */0, 0);
@@ -606,7 +615,7 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
   conn->openning_reason = openning_reason;
   conn->ret = NULL;
   conn->result = NULL;
-  // TODO: reset conn->row
+  conn->row = NULL;
   conn->err = 0;
   conn->is_active = 0;
   conn->closing = 0;
@@ -662,7 +671,19 @@ static int __msa_pool_try_wake_free_conn(msa_pool_t *pool) {
 static void __msa_conn_poll_handle_close_cb(uv_handle_t* handle) {
   uv_timeout_poll_t *timeout_poll_handle = (uv_timeout_poll_t*)handle;
   msa_connection_t *conn = (msa_connection_t*)timeout_poll_handle->data;
+  __msa_pool_del_closed_connection_wo_poll_handle(conn);
+}
+
+/* without poll handle */
+static inline int __msa_pool_del_closed_connection_wo_poll_handle(msa_connection_t *conn) {
   msa_pool_t *pool;
+
+  // the connection is already closed.
+  assert(!__msa_conn_is_active(conn));
+  assert(conn->current_query_entry == NULL);
+  assert(conn->result == NULL);
+  assert(conn->row == NULL);
+  assert(msa_list_empty(&conn->free_conns_list));
 
   assert(conn != NULL);
   pool = conn->pool;

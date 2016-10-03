@@ -8,6 +8,7 @@
 
  */ 
 
+#include <assert.h>
 #include "msa.h"
 #include <uv.h>
 
@@ -52,7 +53,7 @@ int main(int argc, char *argv[]) {
 	opts.initial_nr_conns = 32;
 	opts.min_nr_conns = 32;
 	opts.max_nr_conns = 32;
-	opts.error_cb = NULL;
+	opts.error_cb = pool_error_cb;
 	opts.timeout = 0;
 	opts.max_nr_successive_connection_fails = 0;
 	
