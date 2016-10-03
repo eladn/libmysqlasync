@@ -22,7 +22,7 @@ static void after_query_cb(msa_query_t *query, int status, int mysql_status) {
 	free((void*)query->query);
 	++nr_after_query_cb_calls;
 	assert(status == 0);
-	assert(status == mysql_status);
+	assert(mysql_status == 0);
 }
 
 static void pool_error_cb(msa_pool_t *pool, int status, int mysql_status) {
@@ -65,6 +65,12 @@ int main(int argc, char *argv[]) {
 	res = uv_loop_init(loop);
 	assert(res == 0);
 
+	int err = mysql_library_init(argc, argv, (char **)my_groups);
+	if (err) {
+		fprintf(stderr, "Fatal: mysql_library_init() returns error: %d\n", err);
+		exit(1);
+	}
+
 	res = msa_pool_init(&pool, &opts, loop);
 	assert(res == 0);
 
@@ -90,12 +96,6 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < opt_query_num; i++) {
 		res = msa_query_start(&pool, queries+i);
 		assert(res == 0);
-	}
-
-	int err = mysql_library_init(argc, argv, (char **)my_groups);
-	if (err) {
-		fprintf(stderr, "Fatal: mysql_library_init() returns error: %d\n", err);
-		exit(1);
 	}
 
 	// to run queries

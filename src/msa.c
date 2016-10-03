@@ -181,7 +181,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
 
       case CONNECT_START:   
         status = mysql_real_connect_start(&conn->ret, &conn->mysql, conn->pool->opts->host, 
-        	conn->pool->opts->user, conn->pool->opts->password, conn->pool->opts->db, 0, NULL, 0);
+        	conn->pool->opts->user, conn->pool->opts->password, conn->pool->opts->db, 0, NULL, CLIENT_REMEMBER_OPTIONS /*to avoid segfault on fail*/);
         if (status == 0 && !conn->ret) {
           conn->pool->nr_successive_connection_fails++;
           if (conn->pool->opts->error_cb != NULL)
