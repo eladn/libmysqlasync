@@ -52,6 +52,7 @@ enum msa_conn_open_reason {
 #define __msa_conn_is_active(conn) (conn->is_active)
 #define __msa_conn_is_free(conn) (!msa_list_empty(&conn->free_conns_list))
 #define __msa_pool_nr_conns(pool) (pool->nr_active_conns + pool->nr_nonactive_conns)
+#define __msa_query_is_pending(query) (query->conn == NULL)
 
 
 static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, int status, int event);
@@ -502,6 +503,7 @@ int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready
 
     MSA_INIT_LIST_HEAD(&query->query_list);
     query->conn = NULL; // will remain null until a free conn is available, and set to process this query.
+    query->pool = NULL;
 
 #ifdef MSA_USE_STATISTICS
     stat_category = 0;
@@ -517,10 +519,9 @@ int msa_query_start(msa_pool_t* pool, msa_query_t* query) {
       return -MSA_EPOOLCLOSING;
     }
 
+    query->pool = pool;
     msa_list_add_tail(&query->query_list, &pool->pending_queries_list_head);
     pool->nr_pending_queries++;
-    
-    // TODO: do we want to have a pool field in the query struct?
 
     // if there are free conns - set one of them to process this query.
     __msa_pool_try_wake_free_conn(pool);
@@ -546,7 +547,7 @@ int msa_query_stop(msa_query_t* query) {
   msa_connection_t *conn = query->conn;
 
   // pending query
-  if (conn == NULL) {
+  if (__msa_query_is_pending(query)) {
     __msa_pending_query_close(query);
     return 0;
   }
@@ -762,9 +763,12 @@ static inline int __msa_pending_query_close(msa_query_t *query) {
     assert(query != NULL);
     assert(query->conn == NULL);
 
-    // TODO: implement.
-    //      the query is not assigned to a conn yet. it's in the pending list. we have to take it out of there.
-    //      we need to have `pool` field in the query struct.
+    // the query is not assigned to a conn yet. it's in the pending list. we have to take it out of there.
+    msa_list_del(&query->query_list);
+    MSA_INIT_LIST_HEAD(&query->query_list);
+    query->pool->nr_pending_queries--;
+
+    //TODO: load balancing the connections of this pool, because a query was removed.
 
     // call the after_cb of the query.
     query->after_query_cb(query, MSA_EQUERYSTOP, 0);

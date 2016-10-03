@@ -7,7 +7,8 @@ struct msa_query_s {
 
 	// private fields:
 	list_t query_list;
-	msa_connection_t *conn; // TODO: maybe we won't need it.
+	msa_connection_t *conn;
+	msa_pool_t *pool; // used for the period that the query is pending, and has no conn yet.
 
 #ifdef MSA_USE_STATISTICS
 	query_stats_category_t stat_category;
