@@ -17,7 +17,7 @@ static void res_ready_cb(msa_query_t *query, MYSQL_RES *result, MYSQL_ROW row) {
 	printf("res_ready_cb, query: %p\n", query);
 }
 static void after_query_cb(msa_query_t *query, int status, int mysql_status) {
-	printf("after_query_cb,  query: %p\n", query);
+	//printf("after_query_cb,  query: %p\n", query);
 	free((void*)query->query);
 	++nr_after_query_cb_calls;
 	assert(status == 0);
@@ -26,6 +26,10 @@ static void after_query_cb(msa_query_t *query, int status, int mysql_status) {
 
 static void pool_error_cb(msa_pool_t *pool, int status, int mysql_status) {
 	fprintf(stderr, "pool_error_cb,  status: %d   mysql_status: %d\n", status, mysql_status);
+}
+
+static void pool_close_cb(msa_pool_t *pool) {
+	printf("pool closed.\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -93,6 +97,7 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
+	// to run queries
 	uv_run(loop, UV_RUN_DEFAULT);
 
 	/*long diff = (t2.tv_sec - t1.tv_sec)*1000000 + t2.tv_usec - t1.tv_usec;
@@ -101,8 +106,10 @@ int main(int argc, char *argv[]) {
 	res = msa_pool_nr_pending_queries(&pool);
 	assert(res == 0);
 
-	res = msa_pool_close(&pool);
+	res = msa_pool_close(&pool, pool_close_cb);
 	assert(res == 0);
+
+	uv_run(loop, UV_RUN_DEFAULT); // to close all conns
 
 	assert(nr_after_query_cb_calls == opt_query_num);
 

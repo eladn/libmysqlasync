@@ -26,6 +26,7 @@ enum msa_error_code {
 	MSA_ENOPENDINGQUERIES = 1024,
 	MSA_EEXCEED_FAIL_CONN_ATTEMPTS_LIMIT = 2048,
 	MSA_EQUERYSTOP = 4096,
+	MSA_EPOOLCLOSING = 8192,
 };
 
 struct msa_pool_s;
@@ -38,6 +39,7 @@ typedef struct msa_query_s msa_query_t;
 typedef void (*msa_query_res_ready_cb)(msa_query_t *query, MYSQL_RES *result, MYSQL_ROW row);  /* TODO: maybe pass row nr? */
 typedef void (*msa_after_query_cb)(msa_query_t *query, int status, int mysql_status);
 typedef void (*msa_pool_error_cb)(msa_pool_t *pool, int status, int mysql_status);
+typedef void (*msa_pool_close_cb)(msa_pool_t *pool);
 
 /* Use zero-values for defaults. So that you can bzero the whole struct and set only the relevant fields. */
 typedef struct msa_connection_details_s {
@@ -62,7 +64,7 @@ typedef struct msa_connection_details_s {
 
 
 int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *loop);
-int msa_pool_close(msa_pool_t *pool);
+int msa_pool_close(msa_pool_t *pool, msa_pool_close_cb close_cb);
 int msa_pool_nr_pending_queries(msa_pool_t *pool);
 int msa_pool_nr_active_connections(msa_pool_t *pool);
 

@@ -67,7 +67,10 @@ struct msa_pool_s {
 	unsigned long last_freed_conn_time; // todo: use right time type
 	size_t new_pending_queries;  // being reset when a conn is freed. used to control num of opened conns.
 
-  int nr_successive_connection_fails;
+  	int nr_successive_connection_fails;
+
+  	int closing;
+  	msa_pool_close_cb close_cb;
 
 #ifdef MSA_USE_STATISTICS
 	// todo: use right time type

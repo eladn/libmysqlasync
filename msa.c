@@ -50,6 +50,7 @@ enum msa_conn_open_reason {
 
 #define __msa_conn_is_active(conn) (conn->is_active)
 #define __msa_conn_is_free(conn) (!msa_list_empty(&conn->free_conns_list))
+#define __msa_pool_nr_conns(pool) (pool->nr_active_conns + pool->nr_nonactive_conns)
 
 
 static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, int status, int event);
@@ -67,6 +68,18 @@ static int __msa_connection_del_current_query(msa_connection_t *conn);
 static int __msa_pool_try_wake_free_conn(msa_pool_t *pool);
 static int __msa_pool_del_closed_connection(msa_connection_t *conn);
 static int __msa_conn_close(msa_connection_t* conn);
+static inline int __msa_pending_query_close(msa_query_t *query);
+static inline int __msa_conn_wake_up(msa_connection_t *conn);
+
+
+
+/**
+
+  Notes:
+  1. when wrting the new conns open policy, and closing last chance: keep in mind to check `pool->closing`, if it's on we don't want to open new conns.
+
+**/
+
 
 
 // add event to libuv
@@ -398,6 +411,9 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
 
   pool->nr_successive_connection_fails = 0;
 
+  pool->closing = 0;
+  pool->close_cb = NULL;
+
 #ifdef MSA_USE_STATISTICS
   // todo: use right time type
   pool->avg_query_time = 0;
@@ -410,12 +426,12 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   for (i = 1; i <= pool->opts->initial_nr_conns; ++i) {
     conn = malloc(sizeof(msa_connection_t));
     if (conn == NULL) {
-      msa_pool_close(pool);
+      msa_pool_close(pool, NULL);  // TODO: null is invalid. what to do here?
       return -MSA_EOUTOFMEM;
     }
     ret = __msa_connection_init(conn, pool, MSA_OCONN_INIT);
     if (ret != 0) {
-      msa_pool_close(pool);
+      msa_pool_close(pool, NULL);  // TODO: null is invalid. what to do here?
       return ret;
     }
   }
@@ -423,8 +439,28 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   return 0;
 }
 
-int msa_pool_close(msa_pool_t *pool) {
-  // TODO: implement
+int msa_pool_close(msa_pool_t *pool, msa_pool_close_cb close_cb) {
+  list_t *pos, *n;
+  msa_connection_t *conn;
+  msa_query_t *query;
+
+  assert(close_cb != NULL);
+
+  if (pool->closing) return 0;
+
+  pool->closing = 1;
+  pool->close_cb = close_cb;
+
+  msa_list_for_each_safe(pos, n, &pool->active_conns_list_head) {
+      conn = msa_list_entry(pos, msa_connection_t, conns_list);
+      __msa_conn_close(conn);
+  }
+
+  msa_list_for_each_safe(pos, n, &pool->pending_queries_list_head) {
+      query = msa_list_entry(pos, msa_query_t, query_list);
+      __msa_pending_query_close(query);
+  }
+
   return 0;
 }
 
@@ -466,6 +502,12 @@ int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready
 }
 
 int msa_query_start(msa_pool_t* pool, msa_query_t* query) {
+    assert(pool != NULL && query != NULL);
+
+    if (pool->closing) {
+      return -MSA_EPOOLCLOSING;
+    }
+
     msa_list_add_tail(&query->query_list, &pool->pending_queries_list_head);
     pool->nr_pending_queries++;
     
@@ -494,14 +536,9 @@ int msa_query_stop(msa_query_t* query) {
   // TODO: implement
   msa_connection_t *conn = query->conn;
 
+  // pending query
   if (conn == NULL) {
-    // TODO: implement this case.
-    //      the query is not assigned to a conn yet. it's in the pending list. we have to take it out of there.
-    //      we need to have `pool` field in the query struct.
-
-    // call the after_cb of the query.
-    query->after_query_cb(query, MSA_EQUERYSTOP, 0);
-
+    __msa_pending_query_close(query);
     return 0;
   }
 
@@ -578,7 +615,6 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
   pool->nr_nonactive_conns++;
 
   MSA_INIT_LIST_HEAD(&conn->free_conns_list);
-  MSA_INIT_LIST_HEAD(&conn->conns_list);
   conn->current_query_entry = NULL;
 
   __msa_connection_state_machine_handler(&conn->timeout_poll_handle, -1, -1);
@@ -618,12 +654,7 @@ static int __msa_pool_try_wake_free_conn(msa_pool_t *pool) {
     assert(conn->current_state == QUERY_START);
     assert(__msa_conn_is_active(conn));
 
-    msa_list_del(free_conn_node);
-    pool->nr_free_conns--;
-    MSA_INIT_LIST_HEAD(free_conn_node);
-
-    // start the state machine handle of the conn.
-    __msa_connection_state_machine_handler(&conn->timeout_poll_handle, 0, 0);
+    __msa_conn_wake_up(conn);
 
     return 0;
 }
@@ -631,8 +662,23 @@ static int __msa_pool_try_wake_free_conn(msa_pool_t *pool) {
 static void __msa_conn_poll_handle_close_cb(uv_handle_t* handle) {
   uv_timeout_poll_t *timeout_poll_handle = (uv_timeout_poll_t*)handle;
   msa_connection_t *conn = (msa_connection_t*)timeout_poll_handle->data;
+  msa_pool_t *pool;
+
   assert(conn != NULL);
+  pool = conn->pool;
+  assert(pool != NULL);
+
+  assert(!__msa_conn_is_active(conn));
+  msa_list_del(&conn->conns_list);
+  pool->nr_nonactive_conns--;
+
   free(conn);
+
+  // last connection in a closing pool.
+  if (pool->closing && __msa_pool_nr_conns(pool) == 0) {
+      pool->close_cb(pool);
+      // TODO: do we need to evict things from pool here?
+  }
 }
 
 static inline int __msa_pool_del_closed_connection(msa_connection_t *conn) {
@@ -646,16 +692,7 @@ static inline int __msa_pool_del_closed_connection(msa_connection_t *conn) {
     assert(conn->row == NULL);
     assert(msa_list_empty(&conn->free_conns_list));
 
-    // remove from pool
-    msa_list_del(&conn->conns_list);
-    conn->pool->nr_nonactive_conns--;
-    /*if (__msa_conn_is_active(conn)) {
-      conn->pool->nr_active_conns--;
-    } else {
-      conn->pool->nr_nonactive_conns--;
-    }*/
-
-    // free `conn` memory only after timeout_poll_handle closes.
+    // remove from pool & free `conn` memory only AFTER timeout_poll_handle closes.
     // we assume the handle is already initialized in this stage.
     uv_timeout_poll_close(&conn->timeout_poll_handle, __msa_conn_poll_handle_close_cb);
 
@@ -678,8 +715,38 @@ static int __msa_conn_close(msa_connection_t* conn) {
         assert(conn->current_state == QUERY_START);
         assert(conn->current_query_entry == NULL);
         conn->current_state = CLOSE_START;
-        __msa_connection_state_machine_handler(&conn->timeout_poll_handle, 0, 0);
+
+        __msa_conn_wake_up(conn);
     }
 
+    return 0;
+}
+
+/* caller should define the current_state before. */
+static inline int __msa_conn_wake_up(msa_connection_t *conn) {
+    assert(conn != NULL);
+    assert(__msa_conn_is_free(conn));
+
+    msa_list_del(&conn->free_conns_list);
+    conn->pool->nr_free_conns--;
+    MSA_INIT_LIST_HEAD(&conn->free_conns_list);
+
+    // start the state machine handle of the conn.
+    __msa_connection_state_machine_handler(&conn->timeout_poll_handle, 0, 0);
+
+    return 0;
+}
+
+static inline int __msa_pending_query_close(msa_query_t *query) {
+    assert(query != NULL);
+    assert(query->conn == NULL);
+
+    // TODO: implement.
+    //      the query is not assigned to a conn yet. it's in the pending list. we have to take it out of there.
+    //      we need to have `pool` field in the query struct.
+
+    // call the after_cb of the query.
+    query->after_query_cb(query, MSA_EQUERYSTOP, 0);
+    
     return 0;
 }

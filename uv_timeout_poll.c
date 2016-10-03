@@ -12,7 +12,7 @@ static void __uv_timeout_poll_close_poll_cb(uv_handle_t* poll) {
 	uv_timeout_poll_t* handle = get_timeout_poll_from_poll(poll);
 	assert(handle->init_flags & UV_USE_POLL);
 
-	handle->init_flags ^= ~UV_USE_POLL; // turn off this flag.
+	handle->init_flags ^= UV_USE_POLL; // turn off this flag.
 	
 	if (handle->init_flags & UV_USE_TIMEOUT) {
 		// __uv_timeout_poll_close_timer_cb() will be called.
@@ -26,7 +26,7 @@ static void __uv_timeout_poll_close_timer_cb(uv_handle_t* timeout) {
 	uv_timeout_poll_t* handle = get_timeout_poll_from_timer(timeout);
 	assert(handle->init_flags & UV_USE_TIMEOUT);
 	
-	handle->init_flags ^= ~UV_USE_TIMEOUT; // turn off this flag.
+	handle->init_flags ^= UV_USE_TIMEOUT; // turn off this flag.
 	
 	if (handle->init_flags & UV_USE_POLL) {
 		// __uv_timeout_poll_close_poll_cb() will be called.
