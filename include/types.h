@@ -28,7 +28,6 @@ struct msa_connection_s {
 
 	msa_query_t *current_query_entry;
 	int err;
-	//int index;  // TODO: do we need this?
 
 	list_t conns_list; 	// member of active_conn_list or nonactive_conn_list
 	list_t free_conns_list;
@@ -46,6 +45,8 @@ struct msa_connection_s {
 };
 
 struct msa_pool_s {
+	void* context;
+
 	uv_loop_t* loop;
 	msa_connection_details_t *opts;
 
