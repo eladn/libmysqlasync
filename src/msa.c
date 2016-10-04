@@ -220,6 +220,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
           //       maybe we should relate to create_reason.
           return;
         }
+        assert(conn->ret == &conn->mysql);
         conn->pool->nr_successive_connection_fails = 0;
         conn->current_state = QUERY_START; 
 
@@ -697,6 +698,7 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
 static int __msa_connection_del_current_query(msa_connection_t *conn) {
   assert(conn != NULL && conn->current_query_entry != NULL);
   conn->current_query_entry->conn = NULL;
+  conn->current_query_entry->pool = NULL;
   msa_list_del(&conn->current_query_entry->query_list);
   MSA_INIT_LIST_HEAD(&conn->current_query_entry->query_list);
   conn->current_query_entry = NULL;
