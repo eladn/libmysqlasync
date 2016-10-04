@@ -190,6 +190,10 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
           conn->pool->nr_successive_connection_fails++;
           if (conn->pool->opts->error_cb != NULL)
             conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_ECONNFAIL, mysql_errno(&conn->mysql));
+
+          // need to close mysql explicity in order to free memory, because we set the CLIENT_REMEMBER_OPTIONS flag.
+          mysql_close(&conn->mysql);  // TODO: make sure it does not block in this use here.
+
           __msa_pool_del_closed_connection_wo_poll_handle(conn); /* poll handle is not initialized here yet */
           return;
         }
@@ -211,6 +215,9 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
           //fatal(conn, "Failed to mysql_real_connect()");
           if (conn->pool->opts->error_cb != NULL)
             conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_ECONNFAIL, mysql_errno(&conn->mysql));
+
+          // need to close mysql explicity in order to free memory, because we set the CLIENT_REMEMBER_OPTIONS flag.
+          mysql_close(&conn->mysql);  // TODO: make sure it does not block in this use here.
 
           // remove this conn from pool
           __msa_pool_del_closed_connection(conn);

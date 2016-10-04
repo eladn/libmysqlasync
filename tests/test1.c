@@ -184,9 +184,9 @@ int test1() {
 		exit(1);
 	}
 
+	test.pool.context = (void*)&test;
 	res = msa_pool_init(&test.pool, &test.opts, &test.loop);
 	ASSERT_ZERO(res);
-	test.pool.context = (void*)&test;
 
 	res = msa_query_init(&test.drop_query, "DROP TABLE IF EXISTS " TEST_TABLE_NAME ";", test1_res_ready_cb, test1_after_query_cb, NULL);
 	test.drop_query.context = (void*)&test;
@@ -259,6 +259,17 @@ int test1() {
 
 	ASSERT_EQUALS(test.current_state, TEST1_DONE);
 	//ASSERT_EQUALS(nr_after_query_cb_calls, opt_query_num);
+
+	if (test.current_state <= TEST1_CREATE_TEST_TABLE) {
+		for (int i = 0; i < opt_query_num; i++) {
+			free((void*)test.insert_queries[i].query);
+		}
+		if (test.current_state <= TEST1_SELECT_FROM_TEST_TABLE) {
+			for (int i = 0; i < opt_query_num; i++) {
+				free((void*)test.select_queries[i].query);
+			}
+		}
+	}
 
 	free(test.insert_queries);
 	free(test.select_queries);
