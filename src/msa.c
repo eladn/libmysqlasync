@@ -29,6 +29,7 @@ enum msa_async_state {
   QUERY_START,
   QUERY_WAITING,
   QUERY_RESULT_READY,
+  
   QUERY_FREE_RESULT_START,
   QUERY_FREE_RESULT_WAITING,
   QUERY_FREE_RESULT_DONE,
@@ -184,8 +185,15 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
       */
 
       case CONNECT_START:   
+        /**
+          We use `CLIENT_REMEMBER_OPTIONS` flag in order to avoid segfault on failure.
+            (bug on mariadb - it doubly free mysql_options())
+          Notice we have to call explicity to mysql_close() if the connection fails to establish!
+          When a connection fails to establish we free it and might attemp connecting again.
+            also a message is delivered to user via error_cb().
+        **/
         status = mysql_real_connect_start(&conn->ret, &conn->mysql, conn->pool->opts->host, 
-        	conn->pool->opts->user, conn->pool->opts->password, conn->pool->opts->db, 0, NULL, CLIENT_REMEMBER_OPTIONS /*to avoid segfault on fail*/);
+        	conn->pool->opts->user, conn->pool->opts->password, conn->pool->opts->db, 0, NULL, CLIENT_REMEMBER_OPTIONS);
         if (status == 0 && !conn->ret) {
           conn->pool->nr_successive_connection_fails++;
           if (conn->pool->opts->error_cb != NULL)
@@ -294,9 +302,9 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
             /* 
               We cannot procceed to new SRART_QUERY now.
               We must first free the current result if exists ( https://mariadb.com/kb/en/mariadb/mysql_use_result/ )
+              TODO: ensure that when an error occours we do not have to free result.
             */
-            conn->result = mysql_use_result(&conn->mysql);
-            if (conn->result) {
+            if (!conn->err && (conn->result = mysql_use_result(&conn->mysql)) != NULL) {
               conn->current_state = QUERY_FREE_RESULT_START;
             } else {
               // end of query (no results)
@@ -304,12 +312,15 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
             }
             break;
         }
+
         if (conn->err) {
           prev_query = conn->current_query_entry;
           __msa_connection_del_current_query(conn);
           prev_query->after_query_cb(prev_query, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
           if (conn->pool->opts->error_cb != NULL)
             conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
+
+          // TODO: ensure that when an error occours we do not have to free result.
           conn->current_state = QUERY_START;  // Notice: originally was CONNECT_DONE (don't know why)
                                               // now each conn can arrive CONNECT_DONE only one time during first initialization.
                                               // maybe we need to free result here if exist..
