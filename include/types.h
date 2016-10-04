@@ -9,7 +9,7 @@ struct msa_query_s {
 	list_t query_list;
 	msa_connection_t *conn;
 	msa_pool_t *pool; // used for the period that the query is pending, and has no conn yet.
-
+	int stopping;
 #ifdef MSA_USE_STATISTICS
 	query_stats_category_t stat_category;
 #endif // MSA_USE_STATISTICS

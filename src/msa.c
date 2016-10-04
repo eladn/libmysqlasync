@@ -29,6 +29,9 @@ enum msa_async_state {
   QUERY_START,
   QUERY_WAITING,
   QUERY_RESULT_READY,
+  QUERY_FREE_RESULT_START,
+  QUERY_FREE_RESULT_WAITING,
+  QUERY_FREE_RESULT_DONE,
 
   FETCH_ROW_START,
   FETCH_ROW_WAITING,
@@ -172,7 +175,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
     // TODO: implement
   }
 
-  while ( state_machine_continue){
+  while (state_machine_continue){
     switch(conn->current_state) {
 
       /*
@@ -272,6 +275,25 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         break;
 
       case QUERY_RESULT_READY:
+        assert(conn->current_query_entry != NULL);
+        if (conn->current_query_entry->stopping > 0) {
+            prev_query = conn->current_query_entry;
+            __msa_connection_del_current_query(conn);
+            prev_query->after_query_cb(prev_query, MSA_EQUERYSTOP, mysql_errno(&conn->mysql));
+
+            /* 
+              We cannot procceed to new SRART_QUERY now.
+              We must first free the current result if exists ( https://mariadb.com/kb/en/mariadb/mysql_use_result/ )
+            */
+            conn->result = mysql_use_result(&conn->mysql);
+            if (conn->result) {
+              conn->current_state = QUERY_FREE_RESULT_START;
+            } else {
+              // end of query (no results)
+              conn->current_state = QUERY_START;
+            }
+            break;
+        }
         if (conn->err) {
           prev_query = conn->current_query_entry;
           __msa_connection_del_current_query(conn);
@@ -280,6 +302,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
             conn->pool->opts->error_cb(conn->pool, MSA_EMYSQLERR | MSA_EQUERYFAIL, mysql_errno(&conn->mysql));
           conn->current_state = QUERY_START;  // Notice: originally was CONNECT_DONE (don't know why)
                                               // now each conn can arrive CONNECT_DONE only one time during first initialization.
+                                              // maybe we need to free result here if exist..
           break;
         }
         /*
@@ -288,6 +311,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         */
 
         // TODO: can we assume mysql_errno(&conn->mysql) == 0 ? (because conn->err is zero).
+        assert(mysql_errno(&conn->mysql) == 0);
 
         conn->result = mysql_use_result(&conn->mysql);
         if (conn->result) {
@@ -314,6 +338,14 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         break;
 
       case FETCH_ROW_RESULT_READY: 
+        if (conn->current_query_entry->stopping > 0) {
+            prev_query = conn->current_query_entry;
+            __msa_connection_del_current_query(conn);
+            prev_query->after_query_cb(prev_query, MSA_EQUERYSTOP, mysql_errno(&conn->mysql));
+            conn->current_state = QUERY_FREE_RESULT_START;
+            conn->row = NULL; // TODO: is it ok or we have to free it? (assume it is freed on free results)
+            break;
+        }
         if (!conn->row){
           prev_query = conn->current_query_entry;
           __msa_connection_del_current_query(conn);
@@ -325,9 +357,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
             prev_query->after_query_cb(prev_query, /*TODO: use right status */0, 0);
           }
           
-          mysql_free_result(conn->result);
-          conn->result = NULL;
-          conn->current_state = QUERY_START; 
+          conn->current_state = QUERY_FREE_RESULT_START; 
           break;
         }
         
@@ -341,6 +371,24 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         printf ("\n");
         */
         conn->current_state = FETCH_ROW_START;
+        break;
+
+      case QUERY_FREE_RESULT_START:
+        assert(conn->result != NULL);
+        status = mysql_free_result_start(conn->result);
+        state_machine_continue = decide_next_state(status, conn, QUERY_FREE_RESULT_WAITING, QUERY_FREE_RESULT_DONE);   
+        break;
+
+      case QUERY_FREE_RESULT_WAITING:
+        assert(conn->result != NULL);
+        status = mysql_free_result_cont(conn->result, mysql_status(status, event));
+        state_machine_continue = decide_next_state(status, conn, QUERY_FREE_RESULT_WAITING, QUERY_FREE_RESULT_DONE);   
+        break;
+
+      case QUERY_FREE_RESULT_DONE:
+        assert(conn->row == NULL);
+        conn->result = NULL;
+        conn->current_state = QUERY_START;
         break;
 
       case CLOSE_START:
@@ -504,6 +552,7 @@ int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready
     MSA_INIT_LIST_HEAD(&query->query_list);
     query->conn = NULL; // will remain null until a free conn is available, and set to process this query.
     query->pool = NULL;
+    query->stopping = 0;
 
 #ifdef MSA_USE_STATISTICS
     stat_category = 0;
@@ -519,6 +568,11 @@ int msa_query_start(msa_pool_t* pool, msa_query_t* query) {
       return -MSA_EPOOLCLOSING;
     }
 
+    if (query->stopping == 1) {
+      return -MSA_EQUERYSTOPPING;
+    }
+
+    query->stopping = 0;
     query->pool = pool;
     msa_list_add_tail(&query->query_list, &pool->pending_queries_list_head);
     pool->nr_pending_queries++;
@@ -538,39 +592,37 @@ int msa_query_start(msa_pool_t* pool, msa_query_t* query) {
 }
 
 /**
-  not implemented.
-  problem. we might need to kill this conn because it is stopped.
-  maybe we should allow stop only if it is still pending.
+  The after_cb will be called with `MSA_EQUERYSTOP` status when the query will be stopped.
+  Exept this call, callbacks won't be called after calling msa_query_stop().
+  If the query is still pending (not assigned with a conn), it will be stopped immediatly.
+  Otherwise, it will be stopped after the current stage of its conn state-machine.
+  Post stopping, conn's state machine will be cleaned from results.
 **/
 int msa_query_stop(msa_query_t* query) {
-  // TODO: implement
-  msa_connection_t *conn = query->conn;
 
-  // pending query
+  if (query->stopping > 0) {  // already stopping / stopped
+    return -MSA_EQUERYSTOPPING;
+  }
+
+  query->stopping = 1;
+
+  // pending query (conn is NULL)
   if (__msa_query_is_pending(query)) {
     __msa_pending_query_close(query);
+    query->stopping = 2;  // stopped. TODO: decide what values will be in stopping field.
+    query->after_query_cb(query, MSA_EQUERYSTOP, 0);
     return 0;
   }
 
-  assert(query == conn->current_query_entry);
-  assert(__msa_conn_is_active(conn));
+  assert(query->conn != NULL);
+  assert(query == query->conn->current_query_entry);
+  assert(__msa_conn_is_active(query->conn));
+  assert(query->conn->current_state == QUERY_WAITING || query->conn->current_state == FETCH_ROW_WAITING);
 
-  // stop the poll handle of the conn
-  uv_timeout_poll_stop(&conn->timeout_poll_handle);
-
-  // TODO: re-set the conn state to query-start.
-  switch(conn->current_state) {
-    case QUERY_WAITING:
-    case FETCH_ROW_WAITING:
-    default:
-      assert(0);
-  }
-  __msa_connection_del_current_query(conn);
-  conn->current_state = QUERY_START;
-  // TODO: re-run the state machine handler of the conn.
-
-  // call the after_cb of the query.
-  query->after_query_cb(query, MSA_EQUERYSTOP, 0);
+  /*
+    The next stages in the state machine will detect that stopping == 1 and will stop the query.
+    The after_cb will be called with `MSA_EQUERYSTOP` status.
+  */
 
   return 0;
 }
@@ -710,7 +762,7 @@ static inline int __msa_pool_del_closed_connection(msa_connection_t *conn) {
     // the connection is already closed.
     assert(!__msa_conn_is_active(conn));
     assert(conn->current_query_entry == NULL);
-    assert(conn->result == NULL);
+    assert(conn->result == NULL);  // TODO: verify that in each call to this func it is the state..
     assert(conn->row == NULL);
     assert(msa_list_empty(&conn->free_conns_list));
 
