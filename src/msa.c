@@ -73,8 +73,8 @@ static int __msa_connection_del_current_query(msa_connection_t *conn);
 static int __msa_pool_try_wake_free_conn(msa_pool_t *pool);
 static int __msa_pool_del_closed_connection(msa_connection_t *conn);
 static inline int __msa_pool_del_closed_connection_wo_poll_handle(msa_connection_t *conn);
-static int __msa_conn_close(msa_connection_t* conn);
-static inline int __msa_pending_query_close(msa_query_t *query);
+static int __msa_conn_close(msa_connection_t* conn, int flag_stop_current_query);
+static inline int __msa_pending_query_stop(msa_query_t *query);
 static inline int __msa_conn_wake_up(msa_connection_t *conn);
 
 
@@ -204,6 +204,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
 
       case CONNECT_DONE: 
         assert(conn->current_query_entry == NULL);
+
         if (!conn->ret) {
           conn->pool->nr_successive_connection_fails++;
 
@@ -259,6 +260,7 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
         pending_query_node = conn->pool->pending_queries_list_head.next;
         assert(pending_query_node != &conn->pool->pending_queries_list_head);  // we verified that the list is not empty.
         conn->current_query_entry = msa_list_entry(pending_query_node, msa_query_t, query_list);
+        conn->current_query_entry->conn = conn;
         msa_list_del(pending_query_node);
         conn->pool->nr_pending_queries--;
         msa_list_add_tail(pending_query_node, &conn->pool->active_queries_list_head);
@@ -504,20 +506,29 @@ int msa_pool_close(msa_pool_t *pool, msa_pool_close_cb close_cb) {
 
   assert(close_cb != NULL);
 
-  if (pool->closing) return 0;
+  if (pool->closing) {
+    return -MSA_EPOOLCLOSING;
+  }
 
   pool->closing = 1;
   pool->close_cb = close_cb;
 
-  msa_list_for_each_safe(pos, n, &pool->active_conns_list_head) {
-      conn = msa_list_entry(pos, msa_connection_t, conns_list);
-      __msa_conn_close(conn);
-  }
-
   msa_list_for_each_safe(pos, n, &pool->pending_queries_list_head) {
       query = msa_list_entry(pos, msa_query_t, query_list);
-      __msa_pending_query_close(query);
+      __msa_pending_query_stop(query);
   }
+
+  msa_list_for_each_safe(pos, n, &pool->active_conns_list_head) {
+      conn = msa_list_entry(pos, msa_connection_t, conns_list);
+      __msa_conn_close(conn, 1);
+  }
+
+  msa_list_for_each_safe(pos, n, &pool->nonactive_conns_list_head) {
+      conn = msa_list_entry(pos, msa_connection_t, conns_list);
+      __msa_conn_close(conn, 1);
+  }
+
+  /* now we assume all active queries has been stopped. */
 
   return 0;
 }
@@ -608,9 +619,8 @@ int msa_query_stop(msa_query_t* query) {
 
   // pending query (conn is NULL)
   if (__msa_query_is_pending(query)) {
-    __msa_pending_query_close(query);
+    __msa_pending_query_stop(query);
     query->stopping = 2;  // stopped. TODO: decide what values will be in stopping field.
-    query->after_query_cb(query, MSA_EQUERYSTOP, 0);
     return 0;
   }
 
@@ -774,10 +784,12 @@ static inline int __msa_pool_del_closed_connection(msa_connection_t *conn) {
 }
 
 /**
-  It will be closed after the current query serving is done.
-  The current query processing by this conn, if there any, won't be distrupted.
+  If `flag_stop_current_query` is on, the conn will be closed only after the current query serving is done.
+  In that case, the current query processing by this conn, if there any, won't be distrupted.
+  Otherwise the current query will be closed and then the connection will be closed as well.
+  If the connection has not been established yet, it will be established and only then closed.
 **/
-static int __msa_conn_close(msa_connection_t* conn) {
+static int __msa_conn_close(msa_connection_t* conn, int flag_stop_current_query) {
     if (conn->closing) return 0;
 
     conn->closing = 1; // TODO: do we want to store a closing reason here? (to give another last chance before closing in some cases)
@@ -789,8 +801,10 @@ static int __msa_conn_close(msa_connection_t* conn) {
         assert(conn->current_state == QUERY_START);
         assert(conn->current_query_entry == NULL);
         conn->current_state = CLOSE_START;
-
         __msa_conn_wake_up(conn);
+    } else if (flag_stop_current_query && conn->current_query_entry != NULL) {
+        assert(conn == conn->current_query_entry->conn);
+        msa_query_stop(conn->current_query_entry);
     }
 
     return 0;
@@ -811,7 +825,7 @@ static inline int __msa_conn_wake_up(msa_connection_t *conn) {
     return 0;
 }
 
-static inline int __msa_pending_query_close(msa_query_t *query) {
+static inline int __msa_pending_query_stop(msa_query_t *query) {
     assert(query != NULL);
     assert(query->conn == NULL);
 
