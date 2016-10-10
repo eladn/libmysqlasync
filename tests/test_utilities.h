@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #define min(a,b) ((a)<(b) ? (a) : (b))
 #define max(a,b) ((a)>(b) ? (a) : (b))
@@ -74,11 +75,12 @@ static char strTestAdditionalInfo[TEST_ADDITIONAL_INFO_STR_SIZE] = {0};
  
 #define ASSERT_TEST(b,c,op) do { \
         if (IsTestFailed()) {/*return 0;*/} \
-        int v1 = (int)(b);\
-        int v2 = (int)(c);\
+        /* we use `intptr_t` to avoid warnings when asserting on pointers */ \
+        intptr_t v1 = (intptr_t)(b); \
+        intptr_t v2 = (intptr_t)(c);\
         if (!((v1) op (v2))) { \
                 SetTestFailedFlag(); \
-                printf("\nAssertion failed at %s:%d. ![%s %s %s] ==> ![%d %s %d] [errno: %d]\n",__FILE__,__LINE__,#b,#op,#c,v1,#op,v2,errno); \
+                printf("\nAssertion failed at %s:%d. ![%s %s %s] ==> ![%" PRIdPTR " %s %" PRIdPTR "] [errno: %d]\n",__FILE__,__LINE__,#b,#op,#c,v1,#op,v2,errno); \
                 if (strlen(GetTestAdditionalInfo()) > 0) \
                     printf("More info: %s\n", GetTestAdditionalInfo()); \
                 /*return 0;*/ \
