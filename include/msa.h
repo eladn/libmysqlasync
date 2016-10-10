@@ -31,6 +31,8 @@ enum msa_error_code {
 	MSA_EPOOLCLOSING = 16384,
 };
 
+struct msa_dal_s;
+typedef struct msa_dal_s msa_dal_t;
 struct msa_pool_s;
 typedef struct msa_pool_s msa_pool_t;
 struct msa_connection_s;
@@ -42,6 +44,7 @@ typedef void (*msa_query_res_ready_cb)(msa_query_t *query, MYSQL_RES *result, MY
 typedef void (*msa_after_query_cb)(msa_query_t *query, int status, int mysql_status);
 typedef void (*msa_pool_error_cb)(msa_pool_t *pool, int status, int mysql_status);
 typedef void (*msa_pool_close_cb)(msa_pool_t *pool);
+typedef void (*msa_dal_close_cb)(msa_dal_t *pool);
 
 /* Use zero-values for defaults. So that you can bzero(..) the whole struct and set only the relevant fields. */
 typedef struct msa_connection_details_s {
@@ -159,6 +162,28 @@ const char* msa_query_get(msa_query_t* query);
 void* msa_query_get_context(msa_query_t* query);
 void msa_query_set_context(msa_query_t* query, void* context);
 
+/**
+TODO: fix this doc!!
+ * Initializes a DAL (Data Access Level). Assume all the params are properly allocated (and not NULL).
+ *
+ * @param pool - 	Pre-allocated connections pool, to be initialized.
+ * @param opts - 	Pre-allocated & initialized options struct.
+ * 					All fields can be zero for default value, so user can memset the whole estruct to zero.
+ * 					Should be available (not freed) as long as the pool is alive (not closed).
+ * @param loop - 	UV events loop to run poll & timer event handles on.
+ * 
+ * @return			Error code. zero for success.
+ *					On error, the pool needs to be closed properly with `msa_pool_close(..)`.
+ */
+int msa_dal_init(msa_dal_t* dal, uv_loop_t *loop, const char* host, const char* user, const char* password, const char* db);
+
+// todo: add doc!
+int msa_dal_execute(msa_dal_t *dal, const char* query_str, msa_query_res_ready_cb res_ready_cb, msa_after_query_cb after_cb, void* context);
+
+// todo: add doc!
+int msa_dal_close(msa_dal_t *dal, msa_dal_close_cb close_cb);
+
+
 
 /* structures - defined here so the user will know the size of each type, in order to allocate it properly */
 
@@ -219,6 +244,11 @@ struct msa_pool_s {
 #endif // MSA_USE_STATISTICS
 };
 
+struct msa_dal_s {
+	msa_pool_t pool;
+	msa_connection_details_t opts;
+	// TODO: list of available memory resources
+};
 
 
 #endif // MSA_H_
