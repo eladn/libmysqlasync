@@ -188,11 +188,11 @@ int test1() {
 	res = msa_pool_init(&test.pool, &test.opts, &test.loop);
 	ASSERT_ZERO(res);
 
-	res = msa_query_init(&test.drop_query, "DROP TABLE IF EXISTS " TEST_TABLE_NAME ";", test1_res_ready_cb, test1_after_query_cb, NULL);
+	res = msa_query_init(&test.drop_query, "DROP TABLE IF EXISTS " TEST_TABLE_NAME ";", test1_res_ready_cb, test1_after_query_cb);
 	test.drop_query.context = (void*)&test;
 	ASSERT_ZERO(res);
 
-	res = msa_query_init(&test.create_query, "CREATE TABLE " TEST_TABLE_NAME " (`id` int(11) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=latin1;", test1_res_ready_cb, test1_after_query_cb, NULL);
+	res = msa_query_init(&test.create_query, "CREATE TABLE " TEST_TABLE_NAME " (`id` int(11) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=latin1;", test1_res_ready_cb, test1_after_query_cb);
 	test.create_query.context = (void*)&test;
 	ASSERT_ZERO(res);
 
@@ -217,7 +217,7 @@ int test1() {
 			exit(1);
 		}
 		strcpy(strQuery, buffer);
-		res = msa_query_init(test.insert_queries+i, strQuery, test1_res_ready_cb, test1_after_query_cb, NULL);
+		res = msa_query_init(test.insert_queries+i, strQuery, test1_res_ready_cb, test1_after_query_cb);
 		test.insert_queries[i].context = (void*)&test;
 		ASSERT_ZERO(res);
 	}
@@ -231,7 +231,7 @@ int test1() {
 			exit(1);
 		}
 		strcpy(strQuery, buffer);
-		res = msa_query_init(test.select_queries+i, strQuery, test1_res_ready_cb, test1_after_query_cb, NULL);
+		res = msa_query_init(test.select_queries+i, strQuery, test1_res_ready_cb, test1_after_query_cb);
 		test.select_queries[i].context = (void*)&test;
 		ASSERT_ZERO(res);
 	}

@@ -21,6 +21,35 @@
 #define DEFAULT_TIMEOUT 300
 #define DEFAULT_MAX_NR_SUCCESSIVE_CONNECTION_FAILS 3
 
+struct msa_connection_s {
+  msa_pool_t* pool;
+  int current_state;                   // State machine current state
+
+  MYSQL mysql;                        
+  MYSQL *ret;
+  MYSQL_RES *result;
+  MYSQL_ROW row;
+  
+  uv_timeout_poll_t timeout_poll_handle;
+
+  msa_query_t *current_query_entry;
+  int err;
+
+  list_t conns_list;  // member of active_conn_list or nonactive_conn_list
+  list_t free_conns_list;
+
+  int is_active;
+
+    int openning_reason; // should be used for handling failures.
+
+    int closing;  // 0 - no closing; non-zero - the closing reason. it will be closed after the current query serving is done.
+
+#ifdef MSA_USE_STATISTICS
+  // todo: use right time type
+  unsigned long current_query_start_time;
+#endif // MSA_USE_STATISTICS
+};
+
 enum msa_async_state {
   CONNECT_START,
   CONNECT_WAITING,
@@ -29,7 +58,7 @@ enum msa_async_state {
   QUERY_START,
   QUERY_WAITING,
   QUERY_RESULT_READY,
-  
+
   QUERY_FREE_RESULT_START,
   QUERY_FREE_RESULT_WAITING,
   QUERY_FREE_RESULT_DONE,
@@ -118,7 +147,7 @@ static inline int add_event(int status, msa_connection_t *conn) {
 }
 
 // op_status  : return value of a db operation
-// state_wait : one of ( CONNECT_WAITING, QUERY_WAITING, FETCH_ROW_WAITING, CLOSE_WAITING)
+// state_wait : one of ( CONNECT_WAITING, QUERY_WAITING, FETCH_ROW_WAITING, QUERY_FREE_RESULT_WAITING, CLOSE_WAITING)
 static inline int decide_next_state(int op_status, msa_connection_t* conn, 
     int state_wait, int state_go_on){ 
   if (op_status){  
@@ -451,7 +480,6 @@ static void __msa_connection_state_machine_handler(uv_timeout_poll_t* handle, in
 int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *loop) {
   int i;
   msa_connection_t *conn;
-  int ret;
 
   assert(pool != NULL);
 
@@ -461,17 +489,6 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   opts->timeout = (opts->timeout > 0 ? opts->timeout : DEFAULT_TIMEOUT);
   opts->max_nr_successive_connection_fails = (opts->max_nr_successive_connection_fails > 0 
       ? opts->max_nr_successive_connection_fails : DEFAULT_MAX_NR_SUCCESSIVE_CONNECTION_FAILS);
-
-  if (opts->initial_nr_conns < 1)
-    opts->initial_nr_conns = 1;
-
-  if (opts->min_nr_conns < 1)
-    opts->min_nr_conns = 1;
-
-  if (opts->max_nr_conns > 0 && opts->initial_nr_conns < opts->max_nr_conns)
-    return -MSA_EINVAL;
-
-  // TODO: check that `initial_nr_conns` is reasonable.
 
   MSA_INIT_LIST_HEAD(&pool->pending_queries_list_head);  // waiting for connections to be freed.
   pool->nr_pending_queries = 0;
@@ -493,6 +510,17 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   pool->closing = 0;
   pool->close_cb = NULL;
 
+  if (opts->initial_nr_conns < 1)
+    opts->initial_nr_conns = 1;
+
+  if (opts->min_nr_conns < 1)
+    opts->min_nr_conns = 1;
+
+  if (opts->max_nr_conns > 0 && opts->initial_nr_conns < opts->max_nr_conns)
+    return -MSA_EINVAL;
+
+  // TODO: check that `initial_nr_conns` is reasonable.
+
 #ifdef MSA_USE_STATISTICS
   // todo: use right time type
   pool->avg_query_time = 0;
@@ -505,14 +533,10 @@ int msa_pool_init(msa_pool_t *pool, msa_connection_details_t* opts, uv_loop_t *l
   for (i = 1; i <= pool->opts->initial_nr_conns; ++i) {
     conn = malloc(sizeof(msa_connection_t));
     if (conn == NULL) {
-      msa_pool_close(pool, NULL);  // TODO: null is invalid. what to do here?
+      /* Notice: pool has to be closed by caller, that already opened connections will be closed and freed */
       return -MSA_EOUTOFMEM;
     }
-    ret = __msa_connection_init(conn, pool, MSA_OCONN_INIT);
-    if (ret != 0) {
-      msa_pool_close(pool, NULL);  // TODO: null is invalid. what to do here?
-      return ret;
-    }
+    __msa_connection_init(conn, pool, MSA_OCONN_INIT); // we do not check return value because it nevel fails.
   }
 
   return 0;
@@ -563,7 +587,7 @@ int msa_pool_nr_active_connections(msa_pool_t *pool) {
 }
 
 
-int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready_cb res_ready_cb, msa_after_query_cb after_query_cb, void* context) {
+int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready_cb res_ready_cb, msa_after_query_cb after_query_cb) {
     assert(query != NULL && strQuery != NULL);
 
     // TODO: here we malloc for the query.
@@ -575,7 +599,6 @@ int msa_query_init(msa_query_t* query, const char *strQuery, msa_query_res_ready
     strcpy(query->query, strQuery);*/
 
     query->query = strQuery;
-    query->context = context;
     query->res_ready_cb = res_ready_cb;
     query->after_query_cb = after_query_cb;
 
@@ -680,17 +703,6 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
   assert(conn != NULL);
   assert(pool != NULL);
 
-  timeout = pool->opts->timeout;
-
-  mysql_init(&conn->mysql);
-  mysql_options(&conn->mysql, MYSQL_OPT_NONBLOCK, NULL);
-  mysql_options(&conn->mysql, MYSQL_READ_DEFAULT_GROUP, "async_queries");
-
-  // set timeouts to 300 microseconds 
-  mysql_options(&conn->mysql, MYSQL_OPT_READ_TIMEOUT, &timeout);
-  mysql_options(&conn->mysql, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
-  mysql_options(&conn->mysql, MYSQL_OPT_WRITE_TIMEOUT, &timeout);
-
   conn->pool = pool;
   conn->current_state = CONNECT_START;
   conn->timeout_poll_handle.data = conn;
@@ -707,6 +719,17 @@ static int __msa_connection_init(msa_connection_t *conn, msa_pool_t *pool, int o
 
   MSA_INIT_LIST_HEAD(&conn->free_conns_list);
   conn->current_query_entry = NULL;
+
+  // TODO: check return values
+  mysql_init(&conn->mysql);
+  mysql_options(&conn->mysql, MYSQL_OPT_NONBLOCK, NULL);
+  mysql_options(&conn->mysql, MYSQL_READ_DEFAULT_GROUP, "async_queries");
+
+  // set timeouts to 300 microseconds 
+  timeout = pool->opts->timeout;
+  mysql_options(&conn->mysql, MYSQL_OPT_READ_TIMEOUT, &timeout);
+  mysql_options(&conn->mysql, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
+  mysql_options(&conn->mysql, MYSQL_OPT_WRITE_TIMEOUT, &timeout);
 
   __msa_connection_state_machine_handler(&conn->timeout_poll_handle, -1, -1);
 
