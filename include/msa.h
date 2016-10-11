@@ -28,7 +28,7 @@ enum msa_error_code {
 	MSA_EEXCEED_FAIL_CONN_ATTEMPTS_LIMIT = 2048,
 	MSA_EQUERYSTOP = 4096,
 	MSA_EQUERYSTOPPING = 8192,
-	MSA_EPOOLCLOSING = 16384,
+	MSA_ECLOSING = 16384,
 };
 
 struct msa_dal_s;
@@ -247,6 +247,7 @@ struct msa_pool_s {
 struct msa_dal_s {
 	msa_pool_t pool;
 	msa_connection_details_t opts;
+	msa_dal_close_cb close_cb;
 	// TODO: list of available memory resources
 };
 

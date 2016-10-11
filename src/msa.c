@@ -550,7 +550,7 @@ int msa_pool_close(msa_pool_t *pool, msa_pool_close_cb close_cb) {
   assert(close_cb != NULL);
 
   if (pool->closing) {
-    return -MSA_EPOOLCLOSING;
+    return -MSA_ECLOSING;
   }
 
   pool->closing = 1;
@@ -618,7 +618,7 @@ int msa_query_start(msa_pool_t* pool, msa_query_t* query) {
     assert(pool != NULL && query != NULL);
 
     if (pool->closing) {
-      return -MSA_EPOOLCLOSING;
+      return -MSA_ECLOSING;
     }
 
     if (query->stopping == 1) {
