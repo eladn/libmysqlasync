@@ -128,6 +128,7 @@ static inline void* __msa_strcpy(const char* str) {
 	char* cpy;
 	if (str == NULL) return NULL;
 	cpy = malloc(strlen(str)+1);
+	if (cpy == NULL) return NULL;
 	strcpy(cpy, str);
 	return cpy;
 }
