@@ -3,6 +3,10 @@
 
 #include <uv.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum uv_timeout_poll_init_flags {
 	UV_USE_POLL = 1,
 	UV_USE_TIMEOUT = 2,
@@ -30,5 +34,9 @@ int uv_timeout_poll_start(uv_timeout_poll_t* handle, int events, uv_timeout_poll
 int uv_timeout_poll_stop(uv_timeout_poll_t* handle);
 
 int uv_timeout_poll_close(uv_timeout_poll_t* handle, uv_close_cb close_cb);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // UV_TIMEOUT_POLL_H

@@ -1,6 +1,10 @@
 #ifndef _MSA_LIST_H
 #define _MSA_LIST_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Simple doubly linked list implementation.
  *
@@ -172,5 +176,9 @@ static inline void msa_list_splice(struct msa_list_head *list, struct msa_list_h
 	for (pos = (head)->prev, prefetch(pos->prev); pos != (head); \
         	pos = pos->prev, prefetch(pos->prev))
         	
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _MSA_LIST_H */

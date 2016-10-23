@@ -3,13 +3,17 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <mysql.h>
+#include <mariadb/mysql.h>
 //#include <my_global.h>
 //#include <my_sys.h>
 #include <uv.h>
 
 #include "list.h"
 #include "uv_timeout_poll.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 
 // TODO: maybe change to `msa_status_code` ?
@@ -163,17 +167,17 @@ void* msa_query_get_context(msa_query_t* query);
 void msa_query_set_context(msa_query_t* query, void* context);
 
 /**
-TODO: fix this doc!!
  * Initializes a DAL (Data Access Level). Assume all the params are properly allocated (and not NULL).
- *
- * @param pool - 	Pre-allocated connections pool, to be initialized.
- * @param opts - 	Pre-allocated & initialized options struct.
- * 					All fields can be zero for default value, so user can memset the whole estruct to zero.
- * 					Should be available (not freed) as long as the pool is alive (not closed).
+ * DAL is actually like a pool, except it manages all the memory allocations, so the user can free all
+ *  given garams immediately after calling DAL API functions.
+ * 
+ * @param dal - 	Pre-allocated dal, to be initialized.
  * @param loop - 	UV events loop to run poll & timer event handles on.
+ * @param host, user, password, db - Connection details. `msa_dal_init()` makes a copy for those.
  * 
  * @return			Error code. zero for success.
- *					On error, the pool needs to be closed properly with `msa_pool_close(..)`.
+ *					On error, `dal->pool` needs to be closed properly with `msa_pool_close(..)`.
+ 					TODO: use msa_dal_close() instead.
  */
 int msa_dal_init(msa_dal_t* dal, uv_loop_t *loop, const char* host, const char* user, const char* password, const char* db);
 
@@ -245,11 +249,16 @@ struct msa_pool_s {
 };
 
 struct msa_dal_s {
+	/* private */
 	msa_pool_t pool;
 	msa_connection_details_t opts;
 	msa_dal_close_cb close_cb;
 	// TODO: list of available memory resources
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 
 #endif // MSA_H_
