@@ -94,7 +94,11 @@ int uv_timeout_poll_start(uv_timeout_poll_t* handle, int events, uv_timeout_poll
 	handle->cb = cb;
 
 	if (handle->init_flags & UV_USE_POLL) {
+#ifdef _WIN32
+		ret = uv_poll_init_socket(loop, &handle->poll, fd);
+#else
 		ret = uv_poll_start(&handle->poll, events, __uv_timeout_poll_poll_cb);
+#endif
 		if (ret < 0) {
 			// At first, the timer was started before the poll so we had to close the timer here.
 			// actually this was not a good practice, because the user might free the whole uv_timeout_poll_t
